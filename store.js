@@ -1,6 +1,8 @@
+// an "almost" object database with interesting semantics
 // TODO allow blob storage without StoreContext dictating how
 // TODO think about null vs "" return null (or undefined) when key does not exist?
 
+// one context represents one database, the user is responsible for `fetchlog`
 function StoreContext() {
     function trace() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }
     function debug() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }

@@ -1,4 +1,10 @@
-// implementing the http api
+// implements an http exposed store
+// TODO implement the blobs
+// TODO implement managing the file backend of the database
+
+var port = 8080;
+
+// setup the database
 
 var StoreContext = require("./store").StoreContext;
 
@@ -6,34 +12,131 @@ var db = new StoreContext();
 var Store = db.Store;
 var root = new Store().retain();
 
-root.set("", "<h1>hello world</h1>\n");
+root.set("",
+    '<form action="/result" method="post" enctype="multipart/form-data">'+
+    '<input type="file" name="value">'+
+    '<input type="?type" name="text" value="text/html">'+
+    '<input type="submit" value="Upload">'+
+    '</form>'
+);
 root.set("?type", "text/html");
 
-console.log("init");
+// create a http server
 
 var sys = require("sys");
+var fs = require("fs");
 var urllib = require("url");
+var multipart = require("multipart");
 var http = require("http");
 
-// TODO this is a bit of a mess ...
-var server = http.createServer(function(req, res) {
+function handle_post(target, req, cb) {
+    req.setEncoding("binary");
+
+    var parser = multipart.parser();
+    parser.headers = req.headers;
+    req.addListener("data", function(chunk) { parser.write(chunk); });
+    req.addListener("end", function() { parser.close(); });
+
+    // state while processing parts
+    var key = null;
+    var val = null;
+    var outstream = null;
+    var outname = null;
+    var haderror = false;
+
+    var wait = 0;
+    function done() {
+        if (wait > 0) { wait--; return; }
+        cb(haderror);
+    }
+
+    parser.onEnd = function() { done(); };
+
+    parser.onPartBegin = function(part) {
+        sys.debug("begin part name: "+ part.name +", filename: "+ part.filename);
+        key = part.name;
+    };
+
+    parser.onPartEnd = function(part) {
+        if (outname) val = outname;
+        if (val) val = val.slice(0, 25);
+        sys.debug("end part, key: '"+ key +"' value: '"+ val +"' blob:"+ !!outname);
+
+        if (key == "value") key = ""; // value is ourselves...
+        target.set(key, val);
+
+        // reset state
+        key = null;
+        val = null;
+        if (outstream) {
+            sys.debug("closing blob file: "+ outname);
+            if (outstream.writeable) outstream.end();
+            outstream = null;
+            outname = null;
+        }
+    }
+
+    parser.onData = function(chunk) {
+        if (!key) return;
+        if (!outstream && !val) { val = chunk; return; }
+
+        // when we get more then one chunk, we save these in a blob
+        if (!outstream) {
+            wait++;
+            outname = "f"+ Math.floor(Math.random() * 10000000) +".blob";
+            outstream = fs.createWriteStream(outname);
+
+            outstream.addListener("drain", function() { req.resume(); });
+            outstream.addListener("error", function(err) {
+                console.log("error opening blob: '"+ outname +"':", err);
+                haderror = "error writing blob";
+                req.resume();
+                done();
+            });
+            outstream.addListener("close", function() {
+                req.resume();
+                done();
+            });
+        }
+
+        // if not writeable, we drop the data
+        if (outstream.writeable) {
+            req.pause();
+            if (val) { outstream.write(val, "binary"); val = null; }
+            outstream.write(chunk, "binary");
+        }
+    }
+}
+
+function handle(req, res) {
     var url = urllib.parse(req.url, true)
     var query = url.query || {};
     console.log(req.method, url.pathname);
 
-    // response
+    // response state
     var status = 500;
-    var body = "";
-    var type = "text/plain";
-    function writeResponse() {
-        if (status == 0) throw "zero status"
-        res.writeHead(status, {
-            "Content-Type": type,
-            "Content-Length": body.length
-        });
-        res.end(body);
-        console.log(status, req.method, url.pathname, body.length, body.slice(0, 40));
-        status = 0;
+    var body = "NOT THE BEES! AAAAAHHHHH! OH, THEY'RE IN MY EYES!";
+    var type = null;
+    function done(sync) {
+        function done() {
+            if (status == 0) throw new Error("zero status");
+            body = body || "";
+            res.writeHead(status, {
+                "Content-Type": type || "text/plain",
+                "Content-Length": body.length
+            });
+            res.end(body);
+            console.log(status, req.method, url.pathname, body.length, body.slice(0, 40));
+            status = 0;
+        }
+
+        if (sync) {
+            //writelognow(db.fetchlog(), done);
+        } else {
+            done();
+            //writeloglazy(db.fetchlog());
+        }
+        db.gc();
     }
 
     // decode request
@@ -68,38 +171,53 @@ var server = http.createServer(function(req, res) {
     }
 
     if (!target) {
-        status = 404;
-        if (create) status = 403;
-        body = "";
-        return writeResponse();
+        if (create) {
+            status = 403;
+        } else {
+            status = 404;
+            body = "Not Found";
+        }
+        return done();
     }
 
     if (!create) {
         status = 200;
         body = Store.get(target, "") || ""
         type = Store.get(target, "?type") || "text/plain";
-        return writeResponse();
+        return done();
     }
 
-    function doCreate() {
+    if (req.method == "GET") {
         console.log("created", "key:", _key, "value:", _value, "type:", _type);
         target.set(_key, _value);
         if (_type) target.sub(_key, true).set("?type", _type)
         status = 201;
-        writeResponse();
+        return done();
     }
 
-    if (req.method == "GET") return doCreate();
-    if (req.method == "PUT") {
-        // TODO
+    if (req.method == "POST") {
+        handle_post(target, req, function(err) {
+            if (!err) {
+                status = 201;
+                body = "";
+            } else {
+                console.log("error with post: "+ err);
+                status = 500;
+            }
+            done();
+        });
+        return;
     }
 
     status = 500;
-    writeResponse();
-    throw "unhanded case";
-});
-server.listen(8080);
-console.log("listening on port 8080");
+    done();
+    console.log(req);
+    throw new Error("unhanded case");
+}
+
+
+var server = http.createServer(handle).listen(port);
+console.log("http interface started: ", port);
 
 /*
 set /?value=test
