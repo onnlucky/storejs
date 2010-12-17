@@ -1,7 +1,10 @@
 // TODO allow blob storage without StoreContext dictating how
+// TODO think about null vs "" return null (or undefined) when key does not exist?
 
 function StoreContext() {
+    function trace() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }
     function debug() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }
+    //function trace() {}
     //function debug() {}
 
     if (!(this instanceof StoreContext)) return new StoreContext();
@@ -123,6 +126,7 @@ function StoreContext() {
 
     // reset a whole store also done when store is new
     function _new(store, v) {
+        trace("new:", store);
         store._data = {}; store._size = 0; store._first = 0; store._last = -1;
         log(store, "new");
         if (!v) return store;
@@ -137,6 +141,7 @@ function StoreContext() {
     }
     function _set(store, k, v) {
         v = _value(v);
+        trace("set:", store, k, JSON.stringify(v).slice(0, 40));
         log(store, "set", k, JSON.stringify(v));
         old = store._data[k];
         release(old);
@@ -220,9 +225,11 @@ function StoreContext() {
     // get a hold of a store referenced under a key
     // it creates a store if necesairy
     Store.prototype.sub = function sub(k, create) {
+        if (!k) return this;
+
         var v = this.get(k);
         if (v instanceof Store) return v;
-        if (v === null && !create) return null;
+        if (!create) return v;
         return this.set(k, new Store(v));
     }
 
@@ -278,8 +285,15 @@ function StoreContext() {
     Store.value = function value(s) {
         if (s instanceof Store) return s.value(); return s || "";
     }
-    Store.get = function get(s, v) {
-        if (s instanceof Store) return s.get(v); return "";
+    Store.sub = function get(s, k, create) {
+        if (s instanceof Store) return s.sub(k, create);
+        if (!k) return s;
+        return null;
+    }
+    Store.get = function get(s, k) {
+        if (s instanceof Store) return s.get(k);
+        if (!k) return s;
+        return "";
     }
     Store.getFirst = function getFirst(s) {
         if (s instanceof Store) return s.getFirst(); return "";
@@ -377,10 +391,11 @@ function StoreContext() {
 }
 
 // export the interface if nodejs is used
-if (typeof(exports) != "undefined") exports.Store = Store;
+if (typeof(exports) != "undefined") exports.StoreContext = StoreContext;
+
+/*
 
 // test
-
 var db = new StoreContext();
 var Store = db.Store;
 var s = Store.import(null, {
@@ -401,4 +416,6 @@ var root = db2.replay(log);
 root.retain();
 db2.dump();
 db2.check();
+
+*/
 
