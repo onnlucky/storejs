@@ -1,395 +1,343 @@
-// incase of badness, we can just replay the append-only log
-function _stdoutlog() { console.log(Array.prototype.join.call(arguments, '/')) }
-function _noplog() { }
+// TODO actually implement reading in from a list of log entries
+// TODO allow blob storage without StoreContext dictating how
 
-// the main store object
-// stores can hold a direct value (getSelf())
-// and can have a mapping from keys to values (possibly other stores)
-// if the keys happen to be numbers, we keep track of the lowest and highest number seen
-function Store(v) {
-    if (!(this instanceof Store)) return new Store(v);
+function StoreContext() {
+    if (!(this instanceof StoreContext)) return new StoreContext();
 
-    Store.alloc(this);
-    this._log = _stdoutlog;
-    _reset(this, v)
-}
+    // incase of badness, we can just replay the append-only log
+    var _log = [];
+    function log() { _log.push(Array.prototype.join.call(arguments, '/')); }
+    this.fetchlog = function fetchlog() { var l = _log; _log = []; return l; }
 
-// internal memory management
-// all stores live on the heap
-// all stores are referenced by the root store, or indirectly by other stores
-// we use reference counting too keep track
-// if the count becomes zero, we push it to a (auto)releasepool
-// all stores have a _ptr field which is their location in the heap
-Store.heap = [];
-Store.nextptr = 0;
-Store.releasepool = [];
-
-Store.alloc = function alloc(s) {
-    if (s._ptr || s._count) throw "fail";
-    while (Store.heap[Store.nextptr]) Store.nextptr++;
-    s._ptr = Store.nextptr;
-    s._count = 0;
-    Store.heap[s._ptr] = s;
-    Store.nextptr++;
-}
-Store.dealloc = function dealloc(s) {
-    Store.releasepool.push(s);
-    process.nextTick(Store.gc);
-}
-Store.retain = function retain(s) {
-    if (!(s instanceof Store)) return;
-    s._count += 1;
-}
-Store.release = function release(s) {
-    if (!(s instanceof Store)) return;
-    s._count -= 1;
-    if (s._count == 0) Store.dealloc(s);
-}
-Store.gc = function gc() {
-    if (Store.releasepool.length == 0) return;
-    for (var s = Store.releasepool.shift(); s; s = Store.releasepool.shift()) {
-        if (s._count == 0) Store.heap[s._ptr] = null;
-        if (s._ptr < Store.nextptr) Store.nextptr = s._ptr;
-        console.log("dealloc/"+ s);
+    // the main store object
+    // stores can hold a direct value (under the empty string as key)
+    // and can have a mapping from keys to values (possibly other stores)
+    // if the keys happen to be numbers, we keep track of the lowest and highest number seen
+    function Store(v) {
+        if (!(this instanceof Store)) return new Store(v);
+        Store.alloc(this);
+        _new(this, v)
     }
-}
-Store.check = function check() {
-    for (var i = 0, len = Store.heap.length; i < len; i++) {
-        if (Store.heap[i] == null) continue;
-        if (Store.heap[i]._count == 0) {
-            if (Store.releasepool.indexOf(Store.heap[i]) == -1) throw "fail";
+    this.Store = Store; // public api
+
+    // internal memory management
+    // all stores live on the heap
+    // all stores are referenced by the root store, or indirectly by other stores
+    // we use reference counting too keep track
+    // if the count becomes zero, we push it to a (auto)releasepool
+    // all stores have a _ptr field which is their location in the heap
+    Store.heap = [];
+    Store.nextptr = 0;
+    Store.releasepool = [];
+
+    Store.alloc = function alloc(s) {
+        if (s._ptr || s._count) throw new Error("fail");
+        while (Store.heap[Store.nextptr]) Store.nextptr++;
+        s._ptr = Store.nextptr;
+        s._count = 0;
+        Store.heap[s._ptr] = s;
+        Store.nextptr++;
+    }
+    Store.dealloc = function dealloc(s) {
+        Store.releasepool.push(s);
+        process.nextTick(Store.gc);
+    }
+    Store.retain = function retain(s) {
+        if (!(s instanceof Store)) return s;
+        s._count += 1;
+        return s;
+    }
+    Store.release = function release(s) {
+        if (!(s instanceof Store)) return s;
+        s._count -= 1;
+        if (s._count == 0) Store.dealloc(s);
+        return s;
+    }
+    Store.gc = function gc() {
+        if (Store.releasepool.length == 0) return;
+        for (var s = Store.releasepool.shift(); s; s = Store.releasepool.shift()) {
+            if (s._count == 0) Store.heap[s._ptr] = null;
+            if (s._ptr < Store.nextptr) Store.nextptr = s._ptr;
+            console.log("dealloc/"+ s);
         }
     }
-}
-Store.dump = function dump() {
-    console.log("----dump:");
-    console.log("length:", Store.heap.length);
-    for (var i = 0, len = Store.heap.length; i < len; i++) {
-        var s = Store.heap[i];
-        if (!s) continue;
-        console.log(s.toString(), JSON.stringify(s._value), JSON.stringify(s._data));
-    }
-    console.log("----");
-}
+    Store.check = function check() {
+        for (var i = 0, len = Store.heap.length; i < len; i++) {
+            var s = Store.heap[i];
+            if (s == null) continue;
 
-Store.prototype.retain = function retain() { this._count += 1; return this; }
-Store.prototype.release = function release() {
-    if (this._count <= 1) {
-        Store.release(this);
+            var size = Object.keys(s._data).length;
+            if ("" in s._data) size--;
+            if (size != s._size) throw new Error(""+ s +"._size != "+ size);
+
+            if (s._count == 0) {
+                if (Store.releasepool.indexOf(s) == -1) throw new Error(""+ s +"._count == 0");
+            }
+        }
+    }
+    Store.dump = function dump() {
+        console.log("----dump:");
+        console.log("length:", Store.heap.length);
+        for (var i = 0, len = Store.heap.length; i < len; i++) {
+            var s = Store.heap[i];
+            if (!s) continue;
+            console.log(s.toString(), s._count, s._size, JSON.stringify(s._data));
+        }
+        console.log("----");
+    }
+
+    Store.prototype.retain = function retain() { this._count += 1; return this; }
+    Store.prototype.release = function release() {
+        if (this._count <= 1) {
+            Store.release(this);
+            return this;
+        }
+        this._count -= 1;
         return this;
     }
-    this._count -= 1;
-    return this;
-}
 
-// mostly internal too, toString and toJSON give heap ptr number
-Store.prototype.toString = function toString() { return "@"+ this._ptr; }
-Store.prototype.toJSON = function toJSON() { return this._ptr; }
+    // mostly internal too, toString and toJSON give heap ptr number
+    Store.prototype.toString = function toString() { return "@"+ this._ptr; }
+    Store.prototype.toJSON = function toJSON() { return this._ptr; }
 
-// internal value management; we only store strings or stores
-// notice all falsy values become the empty string
-// put(key, false); assert(get(key) == "")
-// put(key, "false"); assert(get(key) == "false")
-// put(key, true); assert(get(key) == "true")
-function _value(v) {
-    if (v instanceof Store) return v;
-    if (!v) return ""
-    if (typeof(v) == "string") return v;
-    return JSON.stringify(v);
-}
-function _setvalue(store, v) {
-    v = _value(v);
-    store._log(store, "set", JSON.stringify(v));
-    store._value = v;
-    return this;
-}
+    // internal value management; we only store strings or stores
+    // storing a bare string is an optimization; it is short for storing a new Store(string)
+    // all falsy values become the empty string
+    // put(key, false); assert(get(key) == "")
+    // put(key, "false"); assert(get(key) == "false")
+    // put(key, true); assert(get(key) == "true")
+    function _value(v) {
+        if (v instanceof Store) return v;
+        if (!v) return ""
+        if (typeof(v) == "string") return v;
+        return JSON.stringify(v);
+    }
+    function _setvalue(store, v) {
+        v = _value(v);
+        log(store, "set", JSON.stringify(v));
+        store._value = v;
+        return store;
+    }
 
-// reset a whole store also done when store is new
-function _reset(store, v) {
-    store._value = null; store._data = {}; store._size = 0; store._first = 0; store._last = -1;
-    store._log(store, "reset");
-    return _setvalue(store, v);
-}
+    // reset a whole store also done when store is new
+    function _new(store, v) {
+        store._data = {}; store._size = 0; store._first = 0; store._last = -1;
+        log(store, "new");
+        if (!v) return store;
+        return _set(store, "", v);
+    }
 
-// low level get/set/pop (pop is delete/remove)
-// notice storing a bare string is an optimization; it is short for storing a new Store(string)
-function _entry(v) {
-    if (v instanceof Store) return v;
-    if (!v) return ""
-    if (typeof(v) == "object") return new Store(v);
-    return String(v); // true, numbers, floats, strings
-}
-function _get(store, k) {
-    var v = store._data[k];
-    if (v === undefined) return null;
-    return v;
-}
-function _set(store, k, v) {
-    v = _entry(v);
-    store._log(store, "set", k, JSON.stringify(v));
-    old = store._data[k];
-    Store.release(old);
-    if (old === undefined) store._size += 1;
-    store._data[k] = v;
-    Store.retain(v);
-    return v;
-}
-function _pop(store, k) {
-    var v = store._data[k];
-    if (v == undefined) return null;
-    store._log(store, "pop", k);
-    store._size -= 1;
-    delete store._data[k];
-    Store.release(v);
-    return v;
-}
+    // low level get/set/pop (pop is delete/remove)
+    function _get(store, k) {
+        var v = store._data[k];
+        if (v === undefined) return null;
+        return v;
+    }
+    function _set(store, k, v) {
+        v = _value(v);
+        log(store, "set", k, JSON.stringify(v));
+        old = store._data[k];
+        Store.release(old);
+        if (old === undefined && k != "") store._size += 1;
+        store._data[k] = v;
+        Store.retain(v);
+        return v;
+    }
+    function _pop(store, k) {
+        var v = store._data[k];
+        if (v == undefined) return null;
+        log(store, "pop", k);
+        if (k != "") store._size -= 1;
+        delete store._data[k];
+        Store.release(v);
+        return v;
+    }
 
-// internal operations which involve a number key
-// TODO log their operational intents before their low level modifications?
-function _addfirst(store, v) {
-    // does not renum indexes, instead happely starts using negative indexes
-    var at = store._first = store._first - 1;
-    return _set(store, String(at), v);
-}
-function _addlast(store, v) {
-    var at = store._last = store._last + 1;
-    return _set(store, String(at), v);
-}
-function _popfirst(store) {
-    // does not renum indexes
-    if (store._last < store._first) return null;
-    var k = String(store._first); store._first += 1;
-    if (store._last < store._first) store._last = -1; store._first = 0;
-    return _pop(store, k);
-}
-function _poplast(store) {
-    if (store._last < store._first) return null;
-    var k = String(store._last); store._last -= 1;
-    if (store._last < store._first) store._last = -1; store._first = 0;
-    return _pop(store, k);
-}
-function _getlist(store, at) {
-    if (store._last < store._first) return null;
-    if (at < store._first || at > store._last) return null;
-    return _get(store, String(at));
-}
-function _setlist(store, at, v) {
-    if (store._last < store._first) {
-        store._first = store._last = at;
+    // internal operations which involve a number key
+    // TODO log their operational intents before their low level modifications?
+    function _addfirst(store, v) {
+        // does not renum indexes, instead happely starts using negative indexes
+        var at = store._first = store._first - 1;
         return _set(store, String(at), v);
     }
-    if (at < store._first) {
-        store._first = at;
-    } else if (at > store._last) {
-        store._last = at;
+    function _addlast(store, v) {
+        var at = store._last = store._last + 1;
+        return _set(store, String(at), v);
     }
-    return _set(store, String(at), v);
-}
-function _poplist(store, at) {
-    if (store._last < store._first) return null;
-    if (at == store._first) return _popfirst(store);
-    if (at == store._last) return _poplast(store);
-    if (at < store._first || at > store._last) return null;
-    // does not renum indexes
-    _pop(store, String(at));
-}
-
-// public interface
-Store.prototype.size = function size() { return this._size; }
-Store.prototype.first = function first() { return this._first; }
-Store.prototype.last = function last() { return this._last; }
-Store.prototype.keys = function keys() { return Object.keys(this._data); }
-Store.prototype.meta = function meta() {
-    return { value: this._value, size: this._size, first: this._first, last: this._last };
-}
-Store.prototype.reset = function reset(v) {
-    return _reset(this, v);
-}
-
-// get a hold of a store referenced under a key
-// it creates a store if necesairy
-Store.prototype.sub = function sub(k, create) {
-    var v = this.get(k);
-    if (v instanceof Store) return v;
-    if (v === null && !create) return null;
-    return this.set(k, new Store(v));
-}
-
-// get the value for this store
-Store.prototype.getSelf = function getSelf() { return this._value; }
-Store.prototype.setSelf = function setSelf(v) { return _setvalue(this, v); }
-
-// map like operations on this store
-Store.prototype.set = function set(k, v) {
-    if (v === undefined) v = null;
-    var at = Number(k);
-    if (!isNaN(at)) return _setlist(this, at, v);
-    return _set(this, String(k), v);
-}
-Store.prototype.get = function get(k) {
-    var at = Number(k);
-    if (!isNaN(at)) return _getlist(this, at);
-    return _get(this, String(k))
-}
-Store.prototype.pop = function pop(k) {
-    var at = Number(k);
-    if (!isNaN(at)) return _poplist(this, at);
-    return _pop(this, String(k))
-}
-
-// list/deque like operations on this store
-// these will give you values without having to know their keys, since their keys are numbers
-// however, keys for items will never change; so addFirst() is like unshift(), except that the
-// of the newly added value is not necessarily zero
-// also note, the list behaves like a sparse list:
-// new(); set(0, v1); set(100, v2); assert(popLast()==v2); assert(popLast()=="")
-Store.prototype.addFirst = function addFirst(v) {
-    if (v === undefined) v = null;
-    return _addfirst(this, v);
-}
-Store.prototype.getFirst = function getFirst() {
-    return _getlist(this)
-}
-Store.prototype.popFirst = function popFirst() {
-    return _popfirst(this);
-}
-Store.prototype.addLast = function addLast(v) {
-    if (v === undefined) v = null;
-    return _addlast(this, v);
-}
-Store.prototype.getLast = function getLast() {
-    return _getlist(this)
-}
-Store.prototype.popLast = function popLast() {
-    return _poplast(this);
-}
-
-// convenient static functions
-Store.getSelf = function getSelf(s) {
-    if (s instanceof Store) return s.getSelf(); return s || "";
-}
-Store.get = function get(s, v) {
-    if (s instanceof Store) return s.get(v); return "";
-}
-Store.getFirst = function getFirst(s) {
-    if (s instanceof Store) return s.getSelf(); return "";
-}
-Store.getLast = function getLast(s) {
-    if (s instanceof Store) return s.getLast(); return "";
-}
-
-
-var root = new Store().retain();
-
-root.setSelf("<h1>hello world</h1>\n");
-root.set("?type", "text/html");
-
-console.log("init");
-
-var sys = require("sys");
-var urllib = require("url");
-var http = require("http");
-
-// TODO this is a bit of a mess ...
-var server = http.createServer(function(req, res) {
-    var url = urllib.parse(req.url, true)
-    var query = url.query || {};
-    console.log(req.method, url.pathname);
-
-    // response
-    var status = 500;
-    var body = "";
-    var type = "text/plain";
-    function writeResponse() {
-        if (status == 0) throw "zero status"
-        res.writeHead(status, {
-            "Content-Type": type,
-            "Content-Length": body.length
-        });
-        res.end(body);
-        console.log(status, req.method, url.pathname, body.length);
-        status = 0;
+    function _popfirst(store) {
+        // does not renum indexes
+        if (store._last < store._first) return null;
+        var k = String(store._first); store._first += 1;
+        if (store._last < store._first) store._last = -1; store._first = 0;
+        return _pop(store, k);
     }
-
-    // decode request
-    var create = false;
-    var _value = ("value" in query)?query.value:false;
-    var _key = query.key || false;
-    var _type = query.type || false;
-    if (req.method == "GET") {
-        if (_value !== false) create = true;
+    function _poplast(store) {
+        if (store._last < store._first) return null;
+        var k = String(store._last); store._last -= 1;
+        if (store._last < store._first) store._last = -1; store._first = 0;
+        return _pop(store, k);
     }
-    if (req.method == "POST") {
-        create = true;
-        _value = "";
+    function _getlist(store, at) {
+        if (store._last < store._first) return null;
+        if (at < store._first || at > store._last) return null;
+        return _get(store, String(at));
     }
-
-    // path
-    var path = url.pathname.split("/");
-    if (create && !_key) _key = path.pop();
-
-    // lookup
-    var target = root;
-    for (var i = 1, len = path.length; i < len; i++) {
-        var p = path[i];
-        if (!p) continue;
-        target = target.sub(path[i], create);
-        if (!target) break;
-    }
-
-    if (!target) {
-        status = 404;
-        if (create) status = 403;
-        body = "";
-        return writeResponse();
-    }
-
-    if (!create) {
-        status = 200;
-        body = Store.getSelf(target);
-        type = Store.get(target, "?type") || "text/plain";
-        return writeResponse();
-    }
-
-    function doCreate() {
-        console.log("createt", "key:", _key, "value:", _value, "type:", _type);
-        if (_key) {
-            target.set(_key, _value);
-            if (_type) target.sub(_key).set("?type", _type)
-        } else {
-            target.setSelf(_value);
-            if (_type) target.set("?type", _type)
+    function _setlist(store, at, v) {
+        if (store._last < store._first) {
+            store._first = store._last = at;
+            return _set(store, String(at), v);
         }
-        status = 201;
-        writeResponse();
-        // debug
-        Store.dump();
+        if (at < store._first) {
+            store._first = at;
+        } else if (at > store._last) {
+            store._last = at;
+        }
+        return _set(store, String(at), v);
+    }
+    function _poplist(store, at) {
+        if (store._last < store._first) return null;
+        if (at == store._first) return _popfirst(store);
+        if (at == store._last) return _poplast(store);
+        if (at < store._first || at > store._last) return null;
+        // does not renum indexes
+        _pop(store, String(at));
     }
 
-    if (req.method == "GET") return doCreate();
-    if (req.method == "PUT") {
-        // TODO
+    // public interface
+    Store.prototype.size = function size() { return this._size; }
+    Store.prototype.first = function first() { return this._first; }
+    Store.prototype.last = function last() { return this._last; }
+    Store.prototype.keys = function keys() { return Object.keys(this._data); }
+    Store.prototype.meta = function meta() {
+        return { value: this._value, size: this._size, first: this._first, last: this._last };
+    }
+    Store.prototype.reset = function reset(v) {
+        return _new(this, v);
     }
 
-    status = 500;
-    writeResponse();
-    throw "unhanded case";
-});
-server.listen(8080);
-console.log("listening on port 8080");
+    // get a hold of a store referenced under a key
+    // it creates a store if necesairy
+    Store.prototype.sub = function sub(k, create) {
+        var v = this.get(k);
+        if (v instanceof Store) return v;
+        if (v === null && !create) return null;
+        return this.set(k, new Store(v));
+    }
 
-/*
-set /?value=test
-set POST / data
-get /
-set /?key=foobar&value=test
-set /foobar?self=test
-get /foobar
+    // get the value for this store
+    Store.prototype.value = function value() { return this._get(this, ""); }
 
-TODO rest of api
-get /?size
-get /?first
-get /?last
-get /?keys
-*/
+    // map like operations on this store
+    Store.prototype.set = function set(k, v) {
+        if (v === undefined) v = null;
+        var at = Number(k);
+        if (!isNaN(at) && k !== "") return _setlist(this, at, v);
+        return _set(this, String(k), v);
+    }
+    Store.prototype.get = function get(k) {
+        var at = Number(k);
+        if (!isNaN(at) && k !== "") return _getlist(this, at);
+        return _get(this, String(k))
+    }
+    Store.prototype.pop = function pop(k) {
+        var at = Number(k);
+        if (!isNaN(at) && k !== "") return _poplist(this, at);
+        return _pop(this, String(k))
+    }
+
+    // list/deque like operations on this store
+    // these will give you values without having to know their keys, since their keys are numbers
+    // however, keys for items will never change; so addFirst() is like unshift(), except that the
+    // of the newly added value is not necessarily zero
+    // also note, the list behaves like a sparse list:
+    // new(); set(0, v1); set(100, v2); assert(popLast()==v2); assert(popLast()=="")
+    Store.prototype.addFirst = function addFirst(v) {
+        if (v === undefined) v = null;
+        return _addfirst(this, v);
+    }
+    Store.prototype.getFirst = function getFirst() {
+        return _getlist(this)
+    }
+    Store.prototype.popFirst = function popFirst() {
+        return _popfirst(this);
+    }
+    Store.prototype.addLast = function addLast(v) {
+        if (v === undefined) v = null;
+        return _addlast(this, v);
+    }
+    Store.prototype.getLast = function getLast() {
+        return _getlist(this)
+    }
+    Store.prototype.popLast = function popLast() {
+        return _poplast(this);
+    }
+
+    // convenient static functions
+    Store.value = function value(s) {
+        if (s instanceof Store) return s.value(); return s || "";
+    }
+    Store.get = function get(s, v) {
+        if (s instanceof Store) return s.get(v); return "";
+    }
+    Store.getFirst = function getFirst(s) {
+        if (s instanceof Store) return s.getFirst(); return "";
+    }
+    Store.getLast = function getLast(s) {
+        if (s instanceof Store) return s.getLast(); return "";
+    }
+
+    Store.import = function(target, obj) {
+        if (typeof(obj) != "object") {
+            if (target) { target.set("", obj); return target; }
+            if (!obj) return "";
+            return String(obj);
+        }
+
+        target = target || new Store();
+        if (obj instanceof Array) {
+            for (var i = 0; i < obj.length; i++) {
+                target.set(i, Store.import(null, obj[i]));
+            }
+            return target;
+        }
+        for (var k in obj) {
+            target.set(k, Store.import(null, obj[k]));
+        }
+        return target;
+    }
+
+    Store.export = function(target) {
+        if (!(target instanceof Store)) return target;
+        if (target.size() == 0) return target.value();
+
+        // TODO if only numeric, we could export an array
+        var res = {};
+        var keys = target.keys();
+        var k = null;
+        while (keys.length) {
+            k = keys.shift();
+            res[k] = Store.export(target.get(k));
+        }
+        return res;
+    }
+}
+
+// export the interface if nodejs is used
+if (typeof(exports) != "undefined") exports.Store = Store;
+
+// test
+
+var db = new StoreContext();
+var Store = db.Store;
+var s = Store.import(null, {
+    "": "my own value :)",
+    foo: 1,
+    baz: 2,
+    bar: ["hello", "world"],
+}).retain();
+
+console.log(Store.export(s));
+Store.dump();
+Store.check();
+console.log(db.fetchlog());
 
