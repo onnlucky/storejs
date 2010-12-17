@@ -1,7 +1,9 @@
-// TODO actually implement reading in from a list of log entries
 // TODO allow blob storage without StoreContext dictating how
 
 function StoreContext() {
+    function debug() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }
+    //function debug() {}
+
     if (!(this instanceof StoreContext)) return new StoreContext();
 
     // incase of badness, we can just replay the append-only log
@@ -15,7 +17,7 @@ function StoreContext() {
     // if the keys happen to be numbers, we keep track of the lowest and highest number seen
     function Store(v) {
         if (!(this instanceof Store)) return new Store(v);
-        Store.alloc(this);
+        alloc(this);
         _new(this, v)
     }
     this.Store = Store; // public api
@@ -25,80 +27,80 @@ function StoreContext() {
     // all stores are referenced by the root store, or indirectly by other stores
     // we use reference counting too keep track
     // if the count becomes zero, we push it to a (auto)releasepool
-    // all stores have a _ptr field which is their location in the heap
-    Store.heap = [];
-    Store.nextptr = 0;
-    Store.releasepool = [];
+    // all stores have a _ref field which is their location in the heap
+    var heap = [];
+    var nextref = 0;
+    var releasepool = [];
 
-    Store.alloc = function alloc(s) {
-        if (s._ptr || s._count) throw new Error("fail");
-        while (Store.heap[Store.nextptr]) Store.nextptr++;
-        s._ptr = Store.nextptr;
-        s._count = 0;
-        Store.heap[s._ptr] = s;
-        Store.nextptr++;
+    function alloc(s) {
+        if (s._ref || s._refcount) throw new Error("fail");
+        while (heap[nextref]) nextref++;
+        s._ref = nextref;
+        s._refcount = 0;
+        heap[s._ref] = s;
+        nextref++;
     }
-    Store.dealloc = function dealloc(s) {
-        Store.releasepool.push(s);
-        process.nextTick(Store.gc);
+    function dealloc(s) {
+        releasepool.push(s);
     }
-    Store.retain = function retain(s) {
+    function retain(s) {
         if (!(s instanceof Store)) return s;
-        s._count += 1;
+        s._refcount += 1;
         return s;
     }
-    Store.release = function release(s) {
+    function release(s) {
         if (!(s instanceof Store)) return s;
-        s._count -= 1;
-        if (s._count == 0) Store.dealloc(s);
+        s._refcount -= 1;
+        if (s._refcount == 0) dealloc(s);
         return s;
     }
-    Store.gc = function gc() {
-        if (Store.releasepool.length == 0) return;
-        for (var s = Store.releasepool.shift(); s; s = Store.releasepool.shift()) {
-            if (s._count == 0) Store.heap[s._ptr] = null;
-            if (s._ptr < Store.nextptr) Store.nextptr = s._ptr;
-            console.log("dealloc/"+ s);
+    this.gc = function gc() {
+        if (releasepool.length == 0) return false;
+        for (var s = releasepool.shift(); s; s = releasepool.shift()) {
+            if (s._refcount == 0) heap[s._ref] = null;
+            if (s._ref < nextref) nextref = s._ref;
+            debug("dealloc:", s);
         }
+        return true;
     }
-    Store.check = function check() {
-        for (var i = 0, len = Store.heap.length; i < len; i++) {
-            var s = Store.heap[i];
+    this.check = function check() {
+        for (var i = 0, len = heap.length; i < len; i++) {
+            var s = heap[i];
             if (s == null) continue;
 
             var size = Object.keys(s._data).length;
             if ("" in s._data) size--;
             if (size != s._size) throw new Error(""+ s +"._size != "+ size);
 
-            if (s._count == 0) {
-                if (Store.releasepool.indexOf(s) == -1) throw new Error(""+ s +"._count == 0");
+            if (s._refcount == 0) {
+                if (releasepool.indexOf(s) == -1) throw new Error(""+ s +"._refcount == 0");
             }
         }
     }
-    Store.dump = function dump() {
+    this.dump = function dump() {
         console.log("----dump:");
-        console.log("length:", Store.heap.length);
-        for (var i = 0, len = Store.heap.length; i < len; i++) {
-            var s = Store.heap[i];
+        console.log("length:", heap.length);
+        for (var i = 0, len = heap.length; i < len; i++) {
+            var s = heap[i];
             if (!s) continue;
-            console.log(s.toString(), s._count, s._size, JSON.stringify(s._data));
+            console.log(s.toString(), s._refcount, s._size, JSON.stringify(s._data));
         }
         console.log("----");
     }
 
-    Store.prototype.retain = function retain() { this._count += 1; return this; }
+    Store.prototype.retain = function retain() { this._refcount += 1; return this; }
     Store.prototype.release = function release() {
-        if (this._count <= 1) {
-            Store.release(this);
+        if (this._refcount <= 1) {
+            release(this);
             return this;
         }
-        this._count -= 1;
+        this._refcount -= 1;
         return this;
     }
 
-    // mostly internal too, toString and toJSON give heap ptr number
-    Store.prototype.toString = function toString() { return "@"+ this._ptr; }
-    Store.prototype.toJSON = function toJSON() { return this._ptr; }
+    // mostly internal too, toString and toJSON give heap ref number
+    Store.prototype.toString = function toString() { return "@"+ this._ref; }
+    Store.prototype.toJSON = function toJSON() { return this._ref; }
 
     // internal value management; we only store strings or stores
     // storing a bare string is an optimization; it is short for storing a new Store(string)
@@ -137,10 +139,10 @@ function StoreContext() {
         v = _value(v);
         log(store, "set", k, JSON.stringify(v));
         old = store._data[k];
-        Store.release(old);
+        release(old);
         if (old === undefined && k != "") store._size += 1;
         store._data[k] = v;
-        Store.retain(v);
+        retain(v);
         return v;
     }
     function _pop(store, k) {
@@ -149,7 +151,7 @@ function StoreContext() {
         log(store, "pop", k);
         if (k != "") store._size -= 1;
         delete store._data[k];
-        Store.release(v);
+        release(v);
         return v;
     }
 
@@ -286,7 +288,7 @@ function StoreContext() {
         if (s instanceof Store) return s.getLast(); return "";
     }
 
-    Store.import = function(target, obj) {
+    Store.import = function import(target, obj) {
         if (typeof(obj) != "object") {
             if (target) { target.set("", obj); return target; }
             if (!obj) return "";
@@ -306,7 +308,7 @@ function StoreContext() {
         return target;
     }
 
-    Store.export = function(target) {
+    Store.export = function export(target) {
         if (!(target instanceof Store)) return target;
         if (target.size() == 0) return target.value();
 
@@ -320,6 +322,58 @@ function StoreContext() {
         }
         return res;
     }
+
+    this.replay = function replay(log) {
+        var first = null;
+        var translate = [];
+        function refToStore(ref) {
+            var p = translate[ref];
+            if (p === undefined) throw new Error("unknown reference: "+ ref);
+            var s = heap[p];
+            if (!s) throw new Error("bad reference?");
+            return s;
+        }
+
+        var entry = null;
+        while (log.length) {
+            entry = log.shift();
+            if (entry.charAt(0) != "@") continue;
+            var i = 1;
+            var j = entry.indexOf("/", i); if (j < 0) j = entry.length;
+            var ref = Number(entry.slice(i, j));
+            if (isNaN(ref)) throw new Error("reference not a number: "+ entry.slice(i, j));
+
+            i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
+            var op = entry.slice(i, j);
+
+            i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
+            var key = entry.slice(i, j);
+
+            var val = entry.slice(j + 1);
+            var p = Number(val);
+            if (!isNaN(p) && val != "") val = refToStore(p);
+            else val = val.slice(1, -1);
+
+            switch (op) {
+                case "new":
+                    var s = new Store();
+                    if (!first) first = s;
+                    translate[ref] = s._ref;
+                    break;
+                case "set":
+                    var s = refToStore(ref);
+                    s.set(key, val);
+                    break;
+                case "pop":
+                    var s = refToStore(ref);
+                    s.pop(key);
+                    break;
+                default:
+                    throw new Error("unknown operation: "+ op);
+            }
+        }
+        return first;
+    }
 }
 
 // export the interface if nodejs is used
@@ -330,14 +384,21 @@ if (typeof(exports) != "undefined") exports.Store = Store;
 var db = new StoreContext();
 var Store = db.Store;
 var s = Store.import(null, {
-    "": "my own value :)",
+    "": "my / own / value / :)",
     foo: 1,
     baz: 2,
     bar: ["hello", "world"],
 }).retain();
 
 console.log(Store.export(s));
-Store.dump();
-Store.check();
-console.log(db.fetchlog());
+db.dump();
+db.check();
+var log = db.fetchlog();
+console.log(log);
+
+var db2 = new StoreContext();
+var root = db2.replay(log);
+root.retain();
+db2.dump();
+db2.check();
 
