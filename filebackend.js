@@ -22,6 +22,11 @@ function FileBackend(db) {
             throw new Error("unable to load: "+ err);
         });
         input.on('end', function() {
+            if (root == null) {
+                root = Store.import(null, prefill);
+                self.openlog();
+                return cb(root);
+            }
             db.fetchlog(); // replay part of log is not interesting
             self.openlog();
             cb(root);
@@ -50,6 +55,8 @@ function FileBackend(db) {
 
     this.openlog = function() {
         output = fs.createWriteStream("data.db", { flags: 'a', encoding: 'bindary' });
+        this.writelog(db.fetchlog());
+
         output.on('error', function(err) {
             throw new Error(err);
         });

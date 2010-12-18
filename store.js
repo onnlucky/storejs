@@ -16,6 +16,9 @@ function StoreContext() {
     function log() { _log.push(Array.prototype.join.call(arguments, '/') +'\n'); }
     this.fetchlog = function fetchlog() { var l = _log; _log = []; return l; }
 
+    // blob is an integration point, to delegate the data stored
+    var Blob = this.Blob = function Blob() {};
+
     // the main store object
     // stores can hold a direct value (under the empty string as key)
     // and can have a mapping from keys to values (possibly other stores)
@@ -35,10 +38,16 @@ function StoreContext() {
     // all stores have a _ref field which is their location in the heap
     var heap = [];
     var nextref = 0;
+    var replayref = false;
     var releasepool = [];
 
     function alloc(s) {
         if (s._ref || s._refcount) throw new Error("fail");
+        if (replayref !== false) {
+            // slightly ugly, but when replaying, replayref holds the ref to use
+            if (heap[replayref]) throw new Error("fail");
+            nextref = replayref;
+        }
         while (heap[nextref]) nextref++;
         s._ref = nextref;
         s._refcount = 0;
@@ -115,15 +124,15 @@ function StoreContext() {
     // put(key, true); assert(get(key) == "true")
     function _value(v) {
         if (v instanceof Store) return v;
+        if (v instanceof Blob) return v;
         if (!v) return ""
         if (typeof(v) == "string") return v;
         return JSON.stringify(v);
     }
-    function _setvalue(store, v) {
-        v = _value(v);
-        log(store, "set", JSON.stringify(v));
-        store._value = v;
-        return store;
+    function _serialize(v) {
+        if (v instanceof Store) return v.toString();
+        if (v instanceof Blob) return v.toString();
+        return JSON.stringify(v);
     }
 
     // reset a whole store also done when store is new
@@ -144,7 +153,7 @@ function StoreContext() {
     function _set(store, k, v) {
         v = _value(v);
         trace("set:", store, k, JSON.stringify(v).slice(0, 40));
-        log(store, "set", k, JSON.stringify(v));
+        log(store, "set", k, _serialize(v));
         old = store._data[k];
         release(old);
         if (old === undefined && k != "") store._size += 1;
@@ -360,15 +369,17 @@ function StoreContext() {
         var key = entry.slice(i, j);
 
         var val = entry.slice(j + 1);
-        var p = Number(val);
-        if (!isNaN(p) && val != "") val = refToStore(p);
+        if (val.charAt(0) == "@" && val.length > 1) val = getStore(Number(val.slice(1)));
+        else if (val.charAt(0) == "B" && val.length > 1) throw new Error("BLUB");
         else if (val) val = JSON.parse(val);
 
         var store = null;
         switch (op) {
             case "new":
-                // TODO at the specific ref!
+                // this influences the alloc function ...
+                replayref = ref;
                 store = new Store();
+                replayref = false;
                 if (ref != store._ref) throw new Error("wrong ref: "+ ref, +" != "+ store._ref);
                 break;
             case "set":
@@ -388,30 +399,4 @@ function StoreContext() {
 
 // export the interface if nodejs is used
 if (typeof(exports) != "undefined") exports.StoreContext = StoreContext;
-
-/*
-
-// test
-var db = new StoreContext();
-var Store = db.Store;
-var s = Store.import(null, {
-    "": "my / own / value / :)",
-    foo: 1,
-    baz: 2,
-    bar: ["hello", "world"],
-}).retain();
-
-console.log(Store.export(s));
-db.dump();
-db.check();
-var log = db.fetchlog();
-console.log(log);
-
-var db2 = new StoreContext();
-var root = db2.replay(log);
-root.retain();
-db2.dump();
-db2.check();
-
-*/
 
