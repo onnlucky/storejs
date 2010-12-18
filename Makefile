@@ -1,3 +1,3 @@
-run: store.js http.js post.js
+run: store.js http.js filebackend.js
 	node http.js
 

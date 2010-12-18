@@ -13,7 +13,7 @@ function StoreContext() {
 
     // incase of badness, we can just replay the append-only log
     var _log = [];
-    function log() { _log.push(Array.prototype.join.call(arguments, '/')); }
+    function log() { _log.push(Array.prototype.join.call(arguments, '/') +'\n'); }
     this.fetchlog = function fetchlog() { var l = _log; _log = []; return l; }
 
     // the main store object
@@ -339,56 +339,50 @@ function StoreContext() {
         return res;
     }
 
-    this.replay = function replay(log) {
-        var first = null;
-        var translate = [];
-        function refToStore(ref) {
-            var p = translate[ref];
-            if (p === undefined) throw new Error("unknown reference: "+ ref);
-            var s = heap[p];
-            if (!s) throw new Error("bad reference?");
+    this.replay = function replay(entry) {
+        debug("replay:", entry);
+        function getStore(ref) {
+            var s = heap[ref];
+            if (!s) throw new Error("bad reference? " + ref);
             return s;
         }
 
-        var entry = null;
-        while (log.length) {
-            entry = log.shift();
-            if (entry.charAt(0) != "@") continue;
-            var i = 1;
-            var j = entry.indexOf("/", i); if (j < 0) j = entry.length;
-            var ref = Number(entry.slice(i, j));
-            if (isNaN(ref)) throw new Error("reference not a number: "+ entry.slice(i, j));
+        if (entry.charAt(0) != "@") return;
+        var i = 1;
+        var j = entry.indexOf("/", i); if (j < 0) j = entry.length;
+        var ref = Number(entry.slice(i, j));
+        if (isNaN(ref)) throw new Error("reference not a number: "+ entry.slice(i, j));
 
-            i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
-            var op = entry.slice(i, j);
+        i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
+        var op = entry.slice(i, j);
 
-            i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
-            var key = entry.slice(i, j);
+        i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
+        var key = entry.slice(i, j);
 
-            var val = entry.slice(j + 1);
-            var p = Number(val);
-            if (!isNaN(p) && val != "") val = refToStore(p);
-            else val = val.slice(1, -1);
+        var val = entry.slice(j + 1);
+        var p = Number(val);
+        if (!isNaN(p) && val != "") val = refToStore(p);
+        else if (val) val = JSON.parse(val);
 
-            switch (op) {
-                case "new":
-                    var s = new Store();
-                    if (!first) first = s;
-                    translate[ref] = s._ref;
-                    break;
-                case "set":
-                    var s = refToStore(ref);
-                    s.set(key, val);
-                    break;
-                case "pop":
-                    var s = refToStore(ref);
-                    s.pop(key);
-                    break;
-                default:
-                    throw new Error("unknown operation: "+ op);
-            }
+        var store = null;
+        switch (op) {
+            case "new":
+                // TODO at the specific ref!
+                store = new Store();
+                if (ref != store._ref) throw new Error("wrong ref: "+ ref, +" != "+ store._ref);
+                break;
+            case "set":
+                store = getStore(ref);
+                store.set(key, val);
+                break;
+            case "pop":
+                store = getStore(ref);
+                store.pop(key);
+                break;
+            default:
+                throw new Error("unknown operation: "+ op);
         }
-        return first;
+        return store;
     }
 }
 

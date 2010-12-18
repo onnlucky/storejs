@@ -1,8 +1,20 @@
 // implements an http exposed store
 // TODO implement the blobs
-// TODO implement managing the file backend of the database
 
+
+// config
 var port = 8080;
+var prefill = {
+    "": '<h1>Welcome</h1>' +
+        "<p>bootstrap yourself</p>" +
+        '<form action="/result" method="post" enctype="multipart/form-data">' +
+        '<input type="file" name="value">' +
+        '<input type="?type" name="text" value="text/html">' +
+        '<input type="submit" value="Upload">' +
+        '</form>',
+    "?type": "text/html",
+};
+
 
 // setup the database
 
@@ -10,16 +22,8 @@ var StoreContext = require("./store").StoreContext;
 
 var db = new StoreContext();
 var Store = db.Store;
-var root = new Store().retain();
-
-root.set("",
-    '<form action="/result" method="post" enctype="multipart/form-data">'+
-    '<input type="file" name="value">'+
-    '<input type="?type" name="text" value="text/html">'+
-    '<input type="submit" value="Upload">'+
-    '</form>'
-);
-root.set("?type", "text/html");
+var backend = null;
+var root = null;
 
 // create a http server
 
@@ -79,6 +83,11 @@ function handle_post(target, req, cb) {
     parser.onData = function(chunk) {
         if (!key) return;
         if (!outstream && !val) { val = chunk; return; }
+        if (true) {
+            // TODO remove this so we actually store to blobs
+            val += chunk;
+            return;
+        }
 
         // when we get more then one chunk, we save these in a blob
         if (!outstream) {
@@ -128,15 +137,15 @@ function handle(req, res) {
             res.end(body);
             console.log(status, req.method, url.pathname, body.length, body.slice(0, 40));
             status = 0;
+            db.gc();
         }
 
         if (sync) {
-            //writelognow(db.fetchlog(), done);
+            backend.writelog(db.fetchlog(), true, done);
         } else {
             done();
-            //writeloglazy(db.fetchlog());
+            backend.writelog(db.fetchlog(), false);
         }
-        db.gc();
     }
 
     // decode request
@@ -215,9 +224,18 @@ function handle(req, res) {
     throw new Error("unhanded case");
 }
 
+function done(store) {
+    root = store.retain();
+    var server = http.createServer(handle).listen(port);
+    console.log("http interface started: ", port);
+}
 
-var server = http.createServer(handle).listen(port);
-console.log("http interface started: ", port);
+
+// load in the database
+
+var backend = require("./filebackend").FileBackend(db);
+backend.load(".", prefill, done);
+
 
 /*
 set /?value=test
