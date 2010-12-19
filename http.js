@@ -119,6 +119,17 @@ function handle_post(target, req, cb) {
     }
 }
 
+function checkAccess(target, request, allow) {
+    var a = Store.get(target, "?access");
+    if (!a) return allow;
+    // TODO memoize maybe ... or store back as function?
+    var fn = new Function("req", a);
+    request.allow = allow;
+    var res = fn(request) == true;
+    console.log("access:", a, fn, "allow:", res);
+    return res;
+}
+
 function handle(req, res) {
     var url = urllib.parse(req.url, true)
     var query = url.query || {};
@@ -162,9 +173,11 @@ function handle(req, res) {
         create = true;
         _value = "";
     }
-    if (query.dump) {
-        db.dump();
-    }
+    var op = (create)?"write":"read";
+
+
+    // debugging
+    if (query.dump) { db.dump(); }
 
     // path
     var path = url.pathname.split("/");
@@ -172,25 +185,38 @@ function handle(req, res) {
 
     console.log("query: ", path, "key:", _key, "value:", _value);
 
+    // for ?access management
+    // TODO should be read-only ofcourse...
+    var request = {
+        method: req.method,
+        path: url.pathname,
+        query: query,
+        op: op,
+        allow: true,
+    }
+
     // lookup
+    var allow = true; // default allow everthing
     var target = root;
+    allow = checkAccess(root, allow, "write");
     for (var i = 1, len = path.length; i < len; i++) {
         var p = path[i];
         if (!p) continue;
         target = Store.sub(target, path[i], create);
         if (target == null) break;
+        allow = checkAccess(target, request, allow);
     }
 
-    if (!target) {
-        if (create) {
-            status = 403;
-        } else {
-            status = 404;
-            body = "Not Found";
-        }
+    if (!allow) {
+        status = 403;
+        body = "Forbidden";
         return done();
     }
-
+    if (!target) {
+        status = 404;
+        body = "Not Found";
+        return done();
+    }
     if (!create) {
         status = 200;
         body = Store.get(target, "") || ""
