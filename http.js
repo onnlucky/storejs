@@ -1,5 +1,7 @@
 // implements an http exposed store
 // TODO implement the blobs
+// TODO implement access control
+// TODO nodejs enctype=uuencoded stuff?
 
 
 // config
@@ -30,7 +32,7 @@ var root = null;
 var sys = require("sys");
 var fs = require("fs");
 var urllib = require("url");
-var multipart = require("multipart");
+//var multipart = require("multipart");
 var http = require("http");
 
 function handle_post(target, req, cb) {
@@ -201,6 +203,7 @@ function handle(req, res) {
         target.set(_key, _value);
         if (_type) target.sub(_key, true).set("?type", _type)
         status = 201;
+        body = "";
         return done();
     }
 

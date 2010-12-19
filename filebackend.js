@@ -1,5 +1,7 @@
 // a file backend, it writes the log, and can read the log in on startup
 // TODO add posibility of doing stuff synchronously
+// TODO implement a blob representing a file
+// TODO add way to start new journal by dumping current data as journal ...
 
 var fs = require("fs");
 
@@ -12,24 +14,22 @@ function FileBackend(db) {
     this.load = function load(dir, prefill, cb) {
         var buf = "";
         var root = null;
+
+        function done() {
+            if (!root) root = Store.import(null, prefill);
+            self.openlog();
+            return cb(root);
+        }
+
+        // read the journal and replay it if possible
         var input = fs.createReadStream("data.db", { encoding: 'binary', flags: 'r' });
         input.on('error', function(err) {
-            if (err.errno == process.ENOENT) {
-                root = Store.import(null, prefill);
-                self.openlog();
-                return cb(root);
-            }
+            if (err.errno == process.ENOENT) return done();
             throw new Error("unable to load: "+ err);
         });
         input.on('end', function() {
-            if (root == null) {
-                root = Store.import(null, prefill);
-                self.openlog();
-                return cb(root);
-            }
             db.fetchlog(); // replay part of log is not interesting
-            self.openlog();
-            cb(root);
+            done();
         });
         input.on('data', function(chunk) {
             buf += chunk;
@@ -45,16 +45,11 @@ function FileBackend(db) {
                 i = j + 1;
             }
         });
-
-        return;
-        cb(Store.import(null, prefill));
     }
 
     var output = null;
-    var queue = [];
-
     this.openlog = function() {
-        output = fs.createWriteStream("data.db", { flags: 'a', encoding: 'bindary' });
+        output = fs.createWriteStream("data.db", { flags: 'a', encoding: 'binary' });
         this.writelog(db.fetchlog());
 
         output.on('error', function(err) {
