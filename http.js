@@ -11,9 +11,9 @@ var port = 8080;
 var prefill = {
     "": '<h1>Welcome</h1>' +
         "<p>bootstrap yourself</p>" +
-        '<form action="/result" method="post" enctype="multipart/form-data">' +
+        '<form action="/boot" method="post" enctype="multipart/form-data">' +
         '<input type="file" name="value">' +
-        '<input type="?type" name="text" value="text/html">' +
+        '<input type="text" name="?type" value="text/html">' +
         '<input type="submit" value="Upload">' +
         '</form>',
     "?type": "text/html",
@@ -34,8 +34,7 @@ var root = null;
 var sys = require("sys");
 var fs = require("fs");
 var urllib = require("url");
-// TODO disabled POST for now, because multipart requires npm
-//var multipart = require("multipart");
+var multipart = require("multipart");
 var http = require("http");
 
 function handle_post(target, req, cb) {
@@ -67,9 +66,9 @@ function handle_post(target, req, cb) {
     };
 
     parser.onPartEnd = function(part) {
-        if (outname) val = outname;
-        if (val) val = val.slice(0, 25);
-        sys.debug("end part, key: '"+ key +"' value: '"+ val +"' blob:"+ !!outname);
+        if (outname) val = outname; // TODO new FileBlob(outname);
+        if (!val) val = "";
+        sys.debug("end part, key: '"+ key +"' value: '"+ val.slice(0, 25) +"' blob:"+ !!outname);
 
         if (key == "value") key = ""; // value is ourselves...
         target.set(key, val);
@@ -137,7 +136,6 @@ function checkAccess(target, request, allow) {
 function handle(req, res) {
     var url = urllib.parse(req.url, true)
     var query = url.query || {};
-    console.log(req.method, url.pathname);
 
     // response state
     var status = 500;
@@ -185,7 +183,7 @@ function handle(req, res) {
 
     // path
     var path = url.pathname.split("/");
-    if (create && _key === false) _key = path.pop();
+    if (create && _key === false && req.method != "POST") _key = path.pop();
 
     console.log("query: ", path, "key:", _key, "value:", _value);
 
@@ -238,16 +236,21 @@ function handle(req, res) {
     }
 
     if (req.method == "POST") {
-        handle_post(target, req, function(err) {
-            if (!err) {
-                status = 201;
-                body = "";
-            } else {
-                console.log("error with post: "+ err);
-                status = 500;
-            }
-            done();
-        });
+        var mime = req.headers["content-type"].split(";")[0];
+        if (mime == "multipart/form-data") {
+            handle_post(target.reset(), req, function(err) {
+                if (!err) {
+                    status = 201;
+                    body = "";
+                } else {
+                    console.log("error with post: "+ err);
+                    status = 500;
+                }
+                done();
+            });
+        } else if (mime == "application/x-url-form-encoded") {
+            throw new Error("not imlemented");
+        }
         return;
     }
 

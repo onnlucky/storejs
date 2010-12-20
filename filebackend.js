@@ -5,6 +5,7 @@
 // TODO add way to start new journal by dumping current data as journal ...
 
 var fs = require("fs");
+var ENOENT = process.ENOENT || process.binding('constants').ENOENT;
 
 function FileBackend(db) {
     if (!(this instanceof FileBackend)) return new FileBackend(db);
@@ -25,7 +26,7 @@ function FileBackend(db) {
         // read the journal and replay it if possible
         var input = fs.createReadStream("data.db", { encoding: 'binary', flags: 'r' });
         input.on('error', function(err) {
-            if (err.errno == process.ENOENT) return done();
+            if (err.errno == ENOENT) return done();
             throw new Error("unable to load: "+ err);
         });
         input.on('end', function() {

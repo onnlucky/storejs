@@ -46,7 +46,10 @@ function StoreContext() {
         if (s._ref || s._refcount) throw new Error("fail");
         if (replayref !== false) {
             // slightly ugly, but when replaying, replayref holds the ref to use
-            if (heap[replayref]) throw new Error("fail");
+            if (heap[replayref]) {
+                heap[replayref].release();
+                heap[replayref] = null;
+            }
             nextref = replayref;
         }
         while (heap[nextref]) nextref++;
