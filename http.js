@@ -128,8 +128,9 @@ function checkAccess(target, request, allow) {
     // TODO memoize maybe ... or store back as function?
     var fn = new Function("req", a);
     request.allow = allow;
-    var res = fn(request) == true;
-    console.log("access:", a, fn, "allow:", res);
+    var res = false;
+    try { res = fn(request) == true; } catch (ignore) { console.log(""+ ignore); }
+    //console.log("access:", a, "allow:", res);
     return res;
 }
 
@@ -193,7 +194,7 @@ function handle(req, res) {
     var request = {
         method: req.method,
         path: url.pathname,
-        query: query,
+        query: query || {},
         op: op,
         allow: true,
     }
@@ -201,7 +202,7 @@ function handle(req, res) {
     // lookup
     var allow = true; // default allow everthing
     var target = root;
-    allow = checkAccess(root, allow, "write");
+    allow = checkAccess(root, request, "write");
     for (var i = 1, len = path.length; i < len; i++) {
         var p = path[i];
         if (!p) continue;
