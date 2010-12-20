@@ -1,4 +1,5 @@
 // a file backend, it writes the log, and can read the log in on startup
+// license: MIT; see license.txt
 // TODO add posibility of doing stuff synchronously
 // TODO implement a blob representing a file
 // TODO add way to start new journal by dumping current data as journal ...

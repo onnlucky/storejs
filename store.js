@@ -1,4 +1,5 @@
 // an "almost" object database with interesting semantics
+// license: MIT; see license.txt
 // TODO allow blob storage without StoreContext dictating how
 // TODO think about null vs "" return null (or undefined) when key does not exist?
 

@@ -1,7 +1,9 @@
 // implements an http exposed store
+// license: MIT; see license.txt
 // TODO implement the blobs
 // TODO implement access control
 // TODO nodejs enctype=uuencoded stuff?
+// TODO add a function calling type? so we can have "admin" objects?
 
 
 // config
@@ -32,6 +34,7 @@ var root = null;
 var sys = require("sys");
 var fs = require("fs");
 var urllib = require("url");
+// TODO disabled POST for now, because multipart requires npm
 //var multipart = require("multipart");
 var http = require("http");
 
