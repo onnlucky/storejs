@@ -46,8 +46,8 @@ the exposed interface looks as follows:
 
 The difference if the last two from the second is subtle but important. The
 last two replace the value under a key in the parent. The second example just
-objects the current value of an object, only this last one keeps all sub
-mappings in tact.
+updates the current value of the object, but keeps all its sub mappings as they
+were.
 
 
 # not yet implemented
