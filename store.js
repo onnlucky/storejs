@@ -3,6 +3,17 @@
 // TODO allow blob storage without StoreContext dictating how
 // TODO think about null vs "" return null (or undefined) when key does not exist?
 
+// a Store maps keys to values. Keys are strings, the empty string represents a Stores own value.
+// values can be null, false, true, Numbers, Strings, or Stores. Any value but a store is a
+// "shortcut" for `new Store(value)`.
+// Stores have an unique id assigned to them, if you know the id, you can retrieve the store
+// directly, store.id();
+//
+// Serialization:
+// in append log: { id: "deadb33f", op: "set", key: "key", value: 1234 }\n
+// whole store: { id: "deadb33f", size: 1, first: 1, last: -1,
+//                data: { "": "hello", "other": { id: "cafebabe" } } }\n
+
 // one context represents one database, the user is responsible for `fetchlog`
 function StoreContext() {
     function trace() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }
@@ -14,7 +25,11 @@ function StoreContext() {
 
     // incase of badness, we can just replay the append-only log
     var _log = [];
-    function log() { _log.push(Array.prototype.join.call(arguments, '/') +'\n'); }
+    function log(store, op, key, value) {
+        _log.push(JSON.stringify({
+            id: store.id, op: op, key: key, value: value
+        }) +"\n");
+    }
     this.fetchlog = function fetchlog() { var l = _log; _log = []; return l; }
 
     // blob is an integration point, to delegate the data stored
@@ -36,27 +51,27 @@ function StoreContext() {
     // all stores are referenced by the root store, or indirectly by other stores
     // we use reference counting too keep track
     // if the count becomes zero, we push it to a (auto)releasepool
-    // all stores have a _ref field which is their location in the heap
+    // all stores have a id field which is their location in the heap
     var heap = [];
-    var nextref = 0;
-    var replayref = false;
+    var nextid = 0;
+    var replayid = false;
     var releasepool = [];
 
     function alloc(s) {
-        if (s._ref || s._refcount) throw new Error("fail");
-        if (replayref !== false) {
-            // slightly ugly, but when replaying, replayref holds the ref to use
-            if (heap[replayref]) {
-                heap[replayref].release();
-                heap[replayref] = null;
+        if (s.id || s._refcount) throw new Error("fail");
+        if (replayid !== false) {
+            // slightly ugly, but when replaying, replayid holds the id to use
+            if (heap[replayid]) {
+                heap[replayid].release();
+                heap[replayid] = null;
             }
-            nextref = replayref;
+            nextid = replayid;
         }
-        while (heap[nextref]) nextref++;
-        s._ref = nextref;
+        while (heap[nextid]) nextid++;
+        s.id = nextid;
         s._refcount = 0;
-        heap[s._ref] = s;
-        nextref++;
+        heap[s.id] = s;
+        nextid++;
     }
     function dealloc(s) {
         releasepool.push(s);
@@ -75,8 +90,8 @@ function StoreContext() {
     this.gc = function gc() {
         if (releasepool.length == 0) return false;
         for (var s = releasepool.shift(); s; s = releasepool.shift()) {
-            if (s._refcount == 0) heap[s._ref] = null;
-            if (s._ref < nextref) nextref = s._ref;
+            if (s._refcount == 0) heap[s.id] = null;
+            if (s.id < nextid) nextid = s.id;
             debug("dealloc:", s);
         }
         return true;
@@ -106,37 +121,22 @@ function StoreContext() {
         console.log("----");
     }
 
-    Store.prototype.retain = function retain() { this._refcount += 1; return this; }
-    Store.prototype.release = function release() {
-        if (this._refcount <= 1) {
-            release(this);
-            return this;
-        }
-        this._refcount -= 1;
-        return this;
-    }
+    Store.prototype.retain = function() { return retain(this); }
+    Store.prototype.release = function() { return release(this); }
 
-    // mostly internal too, toString and toJSON give heap ref number
-    Store.prototype.toString = function toString() { return "@"+ this._ref; }
-    Store.prototype.toJSON = function toJSON() { return this._ref; }
+    // mostly internal too, toString and toJSON give heap id number
+    Store.prototype.toString = function toString() { return "@"+ this.id; }
+    Store.prototype.toJSON = function toJSON() { return this.id; }
 
-    // internal value management; we only store strings or stores
-    // storing a bare string is an optimization; it is short for storing a new Store(string)
-    // all falsy values become the empty string
-    // put(key, false); assert(get(key) == "")
-    // put(key, "false"); assert(get(key) == "false")
-    // put(key, true); assert(get(key) == "true")
+    // internal value management; we only store stores or non object types
+    // storing a bare value is an optimization; it is short for storing a new Store(value)
+    // if you wish to store complex objects, use Store.import() instead
     function _value(v) {
         if (v instanceof Store) return v;
         if (v instanceof Blob) return v;
-        if (!v) return ""
-        if (typeof(v) == "string") return v;
-        return JSON.stringify(v);
-    }
-    function _serialize(v) {
-        if (v instanceof Store) return v.toString();
-        if (v instanceof Blob) return v.toString();
-        return JSON.stringify(v);
+        if (v === undefined) return null;
+        if (typeof(v) == "object") return JSON.stringify(v);
+        return v;
     }
 
     // reset a whole store also done when store is new
@@ -157,7 +157,7 @@ function StoreContext() {
     function _set(store, k, v) {
         v = _value(v);
         trace("set:", store, k, JSON.stringify(v).slice(0, 40));
-        log(store, "set", k, _serialize(v));
+        log(store, "set", k, v);
         old = store._data[k];
         release(old);
         if (old === undefined && k != "") store._size += 1;
@@ -352,47 +352,35 @@ function StoreContext() {
         return res;
     }
 
-    this.replay = function replay(entry) {
-        debug("replay:", entry);
-        function getStore(ref) {
-            var s = heap[ref];
-            if (!s) throw new Error("bad reference? " + ref);
-            return s;
+    function getStore(id) {
+        var s = heap[id];
+        if (!s) throw new Error("bad/unknown store id? " + id);
+        return s;
+    }
+
+    this.replay = function replay(text) {
+        var entry = JSON.parse(text);
+        var val = entry.value;
+        if (typeof(val) == "object") {
+            if (val.id) val = getStore(val.id);
+            else if (val.blob) val = getBlob(val.blob);
         }
-
-        if (entry.charAt(0) != "@") return;
-        var i = 1;
-        var j = entry.indexOf("/", i); if (j < 0) j = entry.length;
-        var ref = Number(entry.slice(i, j));
-        if (isNaN(ref)) throw new Error("reference not a number: "+ entry.slice(i, j));
-
-        i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
-        var op = entry.slice(i, j);
-
-        i = j + 1; j = entry.indexOf("/", i); if (j < 0) j = entry.length;
-        var key = entry.slice(i, j);
-
-        var val = entry.slice(j + 1);
-        if (val.charAt(0) == "@" && val.length > 1) val = getStore(Number(val.slice(1)));
-        else if (val.charAt(0) == "B" && val.length > 1) throw new Error("BLUB");
-        else if (val) val = JSON.parse(val);
-
         var store = null;
-        switch (op) {
+        switch (entry.op) {
             case "new":
                 // this influences the alloc function ...
-                replayref = ref;
+                replayid = entry.id;
                 store = new Store();
-                replayref = false;
-                if (ref != store._ref) throw new Error("wrong ref: "+ ref, +" != "+ store._ref);
+                replayid = false;
+                if (entry.id != store.id) throw new Error("wrong id: "+ entry.id, +" != "+ store.id);
                 break;
             case "set":
-                store = getStore(ref);
-                store.set(key, val);
+                store = getStore(entry.id);
+                store.set(entry.key, val);
                 break;
             case "pop":
-                store = getStore(ref);
-                store.pop(key);
+                store = getStore(entry.id);
+                store.pop(entry.key);
                 break;
             default:
                 throw new Error("unknown operation: "+ op);
