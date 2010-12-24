@@ -1,7 +1,7 @@
 // an "almost" object database with interesting semantics
 // license: MIT; see license.txt
-// TODO allow blob storage without StoreContext dictating how
-// TODO think about null vs "" return null (or undefined) when key does not exist?
+// TODO implement blobs
+// TODO write some tests...
 
 // a Store maps keys to values. Keys are strings, the empty string represents a Stores own value.
 // values can be null, false, true, Numbers, Strings, or Stores. Any value but a store is a
@@ -16,19 +16,28 @@
 
 // one context represents one database, the user is responsible for `fetchlog`
 function StoreContext() {
+    if (!(this instanceof StoreContext)) return new StoreContext();
+
+    // random id generator
+    Math.random(+new Date());
+    const _rnd_length = 8;
+    const _chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".split("");
+    const _chars_length = _chars.length;
+    function genid() {
+        var cs = new Array(_rnd_length);
+        for (var i = 0; i < _rnd_length; i++) cs[i] = _chars[0 | Math.random() * _chars_length];
+        return cs.join("");
+    }
+
     function trace() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }
     function debug() { console.log("store.js: "+ Array.prototype.join.call(arguments, " ")); }
     //function trace() {}
     //function debug() {}
 
-    if (!(this instanceof StoreContext)) return new StoreContext();
-
     // incase of badness, we can just replay the append-only log
     var _log = [];
     function log(store, op, key, value) {
-        _log.push(JSON.stringify({
-            id: store.id, op: op, key: key, value: value
-        }) +"\n");
+        _log.push(JSON.stringify({ id: store.id, op: op, key: key, value: value }) +"\n");
     }
     this.fetchlog = function fetchlog() { var l = _log; _log = []; return l; }
 
@@ -52,26 +61,19 @@ function StoreContext() {
     // we use reference counting too keep track
     // if the count becomes zero, we push it to a (auto)releasepool
     // all stores have a id field which is their location in the heap
-    var heap = [];
-    var nextid = 0;
-    var replayid = false;
+    var heap = {};
+    var size = 0;
+    var root = null;
+    var forceid = null;
     var releasepool = [];
 
     function alloc(s) {
         if (s.id || s._refcount) throw new Error("fail");
-        if (replayid !== false) {
-            // slightly ugly, but when replaying, replayid holds the id to use
-            if (heap[replayid]) {
-                heap[replayid].release();
-                heap[replayid] = null;
-            }
-            nextid = replayid;
-        }
-        while (heap[nextid]) nextid++;
-        s.id = nextid;
+        s.id = forceid || genid();
         s._refcount = 0;
+        if (heap[s.id]) throw new Error("fail");
         heap[s.id] = s;
-        nextid++;
+        size++;
     }
     function dealloc(s) {
         releasepool.push(s);
@@ -90,13 +92,16 @@ function StoreContext() {
     this.gc = function gc() {
         if (releasepool.length == 0) return false;
         for (var s = releasepool.shift(); s; s = releasepool.shift()) {
-            if (s._refcount == 0) heap[s.id] = null;
-            if (s.id < nextid) nextid = s.id;
-            debug("dealloc:", s);
+            if (s._refcount == 0) {
+                size--;
+                delete heap[s.id];
+                debug("dealloc:", s.id, "new size:", size);
+            }
         }
         return true;
     }
     this.check = function check() {
+        // TODO fix this ...
         for (var i = 0, len = heap.length; i < len; i++) {
             var s = heap[i];
             if (s == null) continue;
@@ -112,11 +117,11 @@ function StoreContext() {
     }
     this.dump = function dump() {
         console.log("----dump:");
-        console.log("length:", heap.length);
-        for (var i = 0, len = heap.length; i < len; i++) {
-            var s = heap[i];
-            if (!s) continue;
-            console.log(s.toString(), s._refcount, s._size, JSON.stringify(s._data));
+        console.log("size:", size);
+        var keys = Object.keys(heap);
+        for (var i = 0, len = keys.length; i < len; i++) {
+            var s = heap[keys[i]];
+            console.log(s._refcount, _serialize(s));
         }
         console.log("----");
     }
@@ -126,7 +131,17 @@ function StoreContext() {
 
     // mostly internal too, toString and toJSON give heap id number
     Store.prototype.toString = function toString() { return "@"+ this.id; }
-    Store.prototype.toJSON = function toJSON() { return this.id; }
+    Store.prototype.toJSON = function toJSON() { return { id: this.id } }
+
+    function _serialize(s) {
+        return JSON.stringify({
+            id: s.id,
+            size: s._size,
+            first: s._first,
+            last: s._last,
+            data: s._data,
+        });
+    }
 
     // internal value management; we only store stores or non object types
     // storing a bare value is an optimization; it is short for storing a new Store(value)
@@ -369,9 +384,9 @@ function StoreContext() {
         switch (entry.op) {
             case "new":
                 // this influences the alloc function ...
-                replayid = entry.id;
+                forceid = entry.id;
                 store = new Store();
-                replayid = false;
+                forceid = null;
                 if (entry.id != store.id) throw new Error("wrong id: "+ entry.id, +" != "+ store.id);
                 break;
             case "set":
@@ -391,4 +406,23 @@ function StoreContext() {
 
 // export the interface if nodejs is used
 if (typeof(exports) != "undefined") exports.StoreContext = StoreContext;
+
+/*
+var conn = new RemoteStoreContext("http://there:3000/");
+var s = conn.get("foo");
+
+s.on("load", function(e) {
+    console.log("s.keys()", s.keys());
+    //e.set = { "id1": v1 ... }
+    s.listen();
+});
+
+s.on("change", function(e) {
+    console.log("change:", e);
+    //e.pop = { "id1": true, ... }
+    //e.popCount = 1
+    //e.set = { "id2": v2, ... }
+    //e.setCount = 1
+});
+*/
 
